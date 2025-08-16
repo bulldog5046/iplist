@@ -1,10 +1,12 @@
 #!/bin/python3
 import asyncio
 from ipaddress import IPv4Address, IPv6Address, ip_address
-from os import getenv
+from os import getenv, path
 from random import choice, shuffle
 from socket import has_ipv6
 from urllib.request import urlretrieve as download
+import argparse
+from shutil import copyfile
 
 from dns import asyncresolver
 
@@ -87,53 +89,71 @@ def read_ips(
   ipv4Set: set[IPv4Address] = set(ipv4List)
   ipv6Set: set[IPv6Address] = set(ipv6List)
 
-  with open(constants.IPv4_LIST_PATH, mode='r', encoding='utf-8') as f:
-    for ip in f.readlines():
-      ip = ip.strip()
-      try:
-        ip = ip_address(ip)
-        if ip.is_global:
-          ipv4Set.add(ip)
-      except ValueError:
-        if ip != '':
-          print(f'{ip} is not a valid IPv4 address!')
+  try:
+    with open(constants.IPv4_LIST_PATH, mode='r', encoding='utf-8') as f:
+      
+        for ip in f.readlines():
+          ip = ip.strip()
+          try:
+            ip = ip_address(ip)
+            if ip.is_global:
+              ipv4Set.add(ip)
+          except ValueError:
+            if ip != '':
+              print(f'{ip} is not a valid IPv4 address!')
+  except FileNotFoundError:
+    print("File doesn't exist yet")
 
-  with open(constants.IPv6_LIST_PATH, mode='r', encoding='utf-8') as f:
-    for ip in f.readlines():
-      ip = ip.strip()
-      try:
-        ip = ip_address(ip)
-        if ip.is_global:
-          ipv6Set.add(ip)
-      except ValueError:
-        if ip != '':
-          print(f'{ip} is not a valid IPv6 address!')
+  try:
+    with open(constants.IPv6_LIST_PATH, mode='r', encoding='utf-8') as f:
+        for ip in f.readlines():
+          ip = ip.strip()
+          try:
+            ip = ip_address(ip)
+            if ip.is_global:
+              ipv6Set.add(ip)
+          except ValueError:
+            if ip != '':
+              print(f'{ip} is not a valid IPv6 address!')
+  except FileNotFoundError:
+    print("File doesn't exist yet")
 
   return list(ipv4Set), list(ipv6Set)
 
 # download youtubeparsed
 
 
-def download_youtubeparsed():
-  url = 'https://raw.githubusercontent.com/nickspaargaren/no-google/master/categories/youtubeparsed'
-  download(url, '.youtubeparsed')
+def download_domain_list(url: str):
+  fn = '.' + url.split('/')[-1]
+  if url.startswith('http'):
+    download(url, fn)
+  else:
+    copyfile(url, fn)
 
 
 def get_coroutines(
-  ipv4List: list[IPv4Address],
-  ipv6List: list[IPv6Address],
-        ip_fetcher):
+        ipv4List: list[IPv4Address],
+        ipv6List: list[IPv6Address],
+        ip_fetcher,
+        url):
   # make a list of threads
   coroutines = []
 
+  fn = '.' + url.split('/')[-1] if url.startswith('http') else '.' + url
+  print('Filename:', fn)
+  
   # open the youtubeparsed file
-  with open('.youtubeparsed', mode='r', encoding='utf-8') as f:
+  with open(fn, mode='r', encoding='utf-8') as f:
 
     # for each url in the file
     for url in f.readlines():
 
       # strip whitespaces and '.'
       url = url.strip()
+      
+      # extract url from hosts file format
+      if url.startswith(('0.0.0.0', '127.0.0.1')):
+        url = url.split()[1]
 
       # ignore empty lines
       if url == '':
@@ -144,6 +164,7 @@ def get_coroutines(
         continue
 
       # make a thread for each fetch_ip call
+      print('Fetching:', url)
       coroutines.append(ip_fetcher(url, 'A', ipv4List))
       coroutines.append(ip_fetcher(url, 'AAAA', ipv6List))
 
@@ -168,7 +189,7 @@ def write_ips(ipv4List: list[IPv4Address], ipv6List: list[IPv6Address]):
     f.write('\n'.join(map(str, ipv6List)) + '\n')
 
 
-async def main():
+async def main(url: str):
   # make a list of ips
   ipv4List, ipv6List = read_ips()
 
@@ -177,13 +198,13 @@ async def main():
   previousIpv6s = len(ipv6List)
 
   # download youtubeparsed
-  download_youtubeparsed()
+  download_domain_list(url)
 
   # get ip fetcher
   ip_fetcher = get_ip_fetcher()
 
   # get coroutines
-  coroutines = get_coroutines(ipv4List, ipv6List, ip_fetcher)
+  coroutines = get_coroutines(ipv4List, ipv6List, ip_fetcher, url)
 
   # wait for coroutines to finish
   await asyncio.gather(*coroutines)
@@ -205,4 +226,17 @@ async def main():
   write_ips(ipv4List, ipv6List)
 
 if __name__ == '__main__':
-  asyncio.run(main())
+  parser = argparse.ArgumentParser(
+                    prog='List Generator',
+                    description='Create IP lists from URLs')
+  
+  parser.add_argument('-u','--url', default='https://raw.githubusercontent.com/nickspaargaren/no-google/master/categories/youtubeparsed')
+  parser.add_argument('-n', '--name', default='')
+  
+  args = parser.parse_args()
+  
+  # constants override
+  constants.IPv4_LIST_PATH = f'{constants.LISTS_DIR}/{args.name}ipv4.txt'
+  constants.IPv6_LIST_PATH = f'{constants.LISTS_DIR}/{args.name}ipv6.txt'
+  
+  asyncio.run(main(args.url))
